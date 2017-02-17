@@ -12,17 +12,16 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.ViewDefinition;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.avro.generic.GenericData;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.spark.SparkConf;
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.function.MapFunction;
 import org.apache.spark.ml.feature.StringIndexer;
+import org.apache.spark.ml.feature.StringIndexerModel;
 import org.apache.spark.ml.feature.Tokenizer;
 import org.apache.spark.sql.*;
 import org.apache.spark.sql.api.java.UDF1;
@@ -90,16 +89,10 @@ public class TextClassificationPreprocessor {
     extractJob.waitFor();
   }
 
-  static void saveIndexerAsTSVFile(SparkContext sc, StringIndexer indexer){
-
-    sc.parallelize(
-
-    )
-  }
-
 
   public static void main(String[] args) throws TimeoutException, InterruptedException {
     int numClasses = Integer.parseInt(args[1]);
+    String basePath = args[2];
     SparkSession sp = SparkSession.builder().appName("TFTextClassifier").getOrCreate();
     SparkConf sc = sp.sparkContext().conf();
     String projectId = sc.get("fs.gs.project.id");
@@ -109,10 +102,20 @@ public class TextClassificationPreprocessor {
     
     Dataset<Row> df = sp.read().format("com.databricks.spark.avro").load(filePattern);
 
-    Tokenizer tokenizer = new Tokenizer().setInputCol("title").setOutputCol("words");
-    StringIndexer wordIndexer = new StringIndexer().setInputCol("word").setOutputCol("wordId");
+    Dataset<Row> tokenized = new Tokenizer()
+            .setInputCol("title")
+            .setOutputCol("words")
+            .transform(df).na().drop();
 
-    Dataset<Row> tokenized = tokenizer.transform(df).na().drop();
+
+    StringIndexerModel subredditIndex = new StringIndexer()
+            .setInputCol("subreddit")
+            .setOutputCol("subredditId")
+            .fit(tokenized);
+    sp.createDataFrame(Arrays.asList(subredditIndex.labels()), String.class)
+            .write().csv(basePath + "subreddit_vocab.csv");
+
+    subredditIndex.transform(tokenized);
 
     Dataset<Row> positions = tokenized.select(
             tokenized.col("id"),
@@ -120,9 +123,14 @@ public class TextClassificationPreprocessor {
             functions.posexplode(tokenized.col("words")).as(new String[]{"pos", "word"})
     );
 
-    Dataset<Row> indexed = wordIndexer.fit(positions).transform(positions);
+    StringIndexerModel wordIndex = new StringIndexer()
+            .setInputCol("word")
+            .setOutputCol("wordId")
+            .fit(positions);
+    sp.createDataFrame(Arrays.asList(subredditIndex.labels()), String.class)
+            .write().csv(basePath + "vocab.csv");
 
-
+    Dataset<Row> indexed = wordIndex.transform(positions);
 
     sp.sqlContext().udf().register(
             "assemble",
@@ -146,10 +154,6 @@ public class TextClassificationPreprocessor {
             functions.callUDF("assemble", gathered.col("indices")).as("wordIds")
     );
 
-    StringIndexer subredditIndexer = new StringIndexer().setInputCol("subreddit")
-            .setOutputCol("subredditId");
-
-    subredditIndexer.fit(squashed).transform(squashed);
 
     squashed.map(new MapFunction<Row, byte[]>() {
       public byte[] call(Row row) throws Exception {
@@ -162,7 +166,10 @@ public class TextClassificationPreprocessor {
                 .putFeature("subreddit", Feature.newBuilder().setInt64List(subreddit).build());
         return Example.newBuilder().setFeatures(features).build().toByteArray();
       }
-    }, Encoders.BINARY()).write().format("org.tensorflow.hadoop.io.TFRecordFileOutputFormat").save(args[0]);
+    }, Encoders.BINARY())
+            .write()
+            .format("org.tensorflow.hadoop.io.TFRecordFileOutputFormat")
+            .save(basePath + "output_*.tfrecord.pb");
   }
 
 }
