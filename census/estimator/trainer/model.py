@@ -70,6 +70,7 @@ INPUT_COLUMNS = [
 ]
 
 
+
 def build_estimator(model_dir, embedding_size=8, hidden_units=None):
   (gender, race, education, marital_status, relationship,
    workclass, occupation, native_country, age,
@@ -121,30 +122,32 @@ def build_estimator(model_dir, embedding_size=8, hidden_units=None):
       dnn_hidden_units=hidden_units or [100, 70, 50, 25])
 
 
-def is_sparse(column):
-  return isinstance(column, layers.feature_column._SparseColumn)
-
-
-def feature_columns_to_placeholders(feature_columns, default_batch_size=None):
-    return {
-        column.name: tf.placeholder(
-            tf.string if is_sparse(column) else tf.float32,
-            [default_batch_size]
-        )
-        for column in feature_columns
-    }
+def feature_from_column(col):
+    if isinstance(col, layers.feature_column._SparseColumn):
+      return tf.FixedLenFeature([None], tf.string)
+    else:
+      return tf.FixedLenFeature([], tf.float32)
 
 
 def serving_input_fn():
-    feature_placeholders = feature_columns_to_placeholders(INPUT_COLUMNS)
-    features = {
-      key: tf.expand_dims(tensor, -1)
-      for key, tensor in feature_placeholders.items()
+    feature_spec = {
+        column.name: feature_from_column(column)
+        for column in INPUT_COLUMNS
     }
+    tf_record_placeholder = tf.placeholder(tf.string, shape=[None])
+    feature_dict = tf.parse_example(
+        tf_record_placeholder,
+        feature_spec
+    )
+    features = {
+        key: tf.expand_dims(tensor, -1)
+        for key, tensor in feature_dict.iteritems()
+    }
+    feature_dict['tfrecord'] = tf_record_placeholder
     return input_fn_utils.InputFnOps(
       features,
       None,
-      feature_placeholders
+      feature_dict
     )
 
 
