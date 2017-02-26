@@ -103,7 +103,7 @@ Then we'll look up the exact path that your exported trained model binaries live
 gsutil ls -r $OUTPUT_PATH/export
 ```
 
-You should see a directory named `$OUTPUT_PATH/export/Servo/<timestamp>`. Copy this directory path (without the `:` at the end) and set the environment variable `MODEL_BINARIES` to it's value. Then run:
+You should see a directory named `$OUTPUT_PATH/export/JSON/<timestamp>`. Copy this directory path (without the `:` at the end) and set the environment variable `MODEL_BINARIES` to it's value. Then run:
 
 
 ```

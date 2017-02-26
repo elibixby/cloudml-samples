@@ -160,6 +160,19 @@ def build_estimator(model_dir, embedding_size=8, hidden_units=None):
 # YOU NEED NOT MODIFY ANYTHING BELOW HERE TO ADAPT THIS MODEL TO YOUR DATA
 # ************************************************************************
 
+def parse_csv(row_tensor):
+    columns = tf.decode_csv(row_tensor, record_defaults=CSV_COLUMN_DEFAULTS)
+    features = dict(zip(CSV_COLUMNS, columns))
+    
+    # Remove unused columns
+    used_column_names = [col.name for col in INPUT_COLUMNS]
+    used_column_names.append(LABEL_COLUMN)
+    for col in CSV_COLUMNS:
+      if col not in used_column_names:
+        features.pop(col)
+
+    return features
+
 
 def column_to_dtype(column):
   if isinstance(column, layers.feature_column._SparseColumn):
@@ -168,20 +181,83 @@ def column_to_dtype(column):
     return tf.float32
 
 
-def serving_input_fn():
-    feature_placeholders = {
-        column.name: tf.placeholder(column_to_dtype(column), [None])
-        for column in INPUT_COLUMNS
+def columns_to_feature_spec(columns):
+    """Converts FeatureColumns to a feature_spec for tf.parse_example"""
+    return {
+        column.name: tf.FixedLenFeature(dtype=column_to_dtype(column), shape=[])
+        for column in columns
     }
-    features = {
-      key: tf.expand_dims(tensor, -1)
-      for key, tensor in feature_placeholders.items()
+
+
+def generate_serving_input_fn(input_type, default_batch_size=None):
+  """Creates a serving input function.
+
+  When deploying a model for prediction, you must define the API
+  provided by your prediction server. To do this we define a new
+  input_fn.
+
+  Args:
+    input_type: str, one of 'CSV', 'TF_RECORD', 'JSON'
+    default_batch_size: int, batch_size. None allows variable batch
+      sizes, which should be used in all but exceptional circumstances
+  Returns:
+    A function () -> InputFnOps a named tuple (features, label, placeholders)
+    features, and label behave the same as in our training and evaluation
+    input_fn (label should always be None in prediction). 
+
+    The returned placeholders defines the API of our model. If placeholders
+    is a single Tensor our API will expect a single Tensor as input.
+    Alternatively, if we provide a dictionary of Tensors to placeholders,
+    our API will expect a number of Tensors with the corresponding keys.
+
+    Below we detail the 3 different modes offered here:
+    * CSV: In the case that your prediction data is already available in
+      in the same format as your training data - for example batch prediction
+      on a large number of files - you may wish to reuse
+      logic from your training/evaluation input function. Here that logic
+      is in parse_csv. Our API will expect some number of strings, representing
+      CSV rows.
+    * JSON: If your prediction service is acting as a backend for a web
+      or mobile application on the other hand, it may be considerably 
+      easier to pass it JSON data the JSON values are converted to 
+      Tensors. Our API will expect some number of JSON objects, the values
+      of these objects representing Tensors.
+    * TF_RECORD: Alternatively you may wish to serialize prediction data
+      as TFRecrords, before passing byte strings to the API. This is particularly
+      useful in the case of SparseTensors (not used here), where directly
+      passing Tensors is more difficult. Our API will expect some number of
+      byte strings, representing the serialized TFRecords.
+  """
+  if input_type not in ['CSV', 'TF_RECORD', 'JSON']:
+    raise ValueError('input_type must be one of CSV, TF_RECORD, JSON')
+
+  def serving_input_fn():
+    if input_type == 'CSV':
+      csv_rows = tf.placeholder(tf.string, shape=[default_batch_size])
+      # Reused logic from training/evaluation
+      features = parse_csv(csv_rows)
+      features.pop(LABEL_COLUMN)
+      placeholders = {'csv_rows': csv_rows}
+    else:
+      tf_records = tf.placeholder(tf.string, shape=[default_batch_size])
+      feature_spec = columns_to_feature_spec(INPUT_COLUMNS)
+      features = tf.parse_example(tf_records, feature_spec)
+      if input_type == 'TF_RECORD':
+        placeholders = {'tf_records': tf_records}
+      if input_type == 'JSON':
+        # We can feed Tensors to non-placeholder locations in the graph.
+        # This allows us to reuse feature_spec to define our JSON inputs.
+        placeholders = features
+
+    # DNNCombinedLinearClassifier expects rank 2 Tensors, but we want
+    # to be able to feed batches of rank 0 Tensors (i.e. rank 1)
+    feature_columns = {
+        key: tf.expand_dims(tensor, -1)
+        for key, tensor in features.iteritems()
     }
-    return input_fn_utils.InputFnOps(
-      features,
-      None,
-      feature_placeholders
-    )
+    return input_fn_utils.InputFnOps(feature_columns, None, placeholders)
+  return serving_input_fn
+
 
 def generate_input_fn(filenames,
                       num_epochs=None,
@@ -209,19 +285,11 @@ def generate_input_fn(filenames,
         filenames, num_epochs=num_epochs, shuffle=shuffle)
     reader = tf.TextLineReader(skip_header_lines=skip_header_lines)
 
-    _, rows = reader.read_up_to(filename_queue, num_records=batch_size)
-    
-    # DNNLinearCombinedClassifier expects rank 2 tensors.
-    row_columns = tf.expand_dims(rows, -1)
-    columns = tf.decode_csv(row_columns, record_defaults=CSV_COLUMN_DEFAULTS)
-    features = dict(zip(CSV_COLUMNS, columns))
-    
-    # Remove unused columns
-    used_column_names = [col.name for col in INPUT_COLUMNS]
-    used_column_names.append(LABEL_COLUMN)
-    for col in CSV_COLUMNS:
-      if col not in used_column_names:
-        features.pop(col)
+    _, value = reader.read_up_to(filename_queue, num_records=batch_size)
+
+    features = parse_csv(value)
+    for key, tensor in features.iteritems():
+      features[key] = tf.expand_dims(tensor, -1)
 
     if shuffle:
       features = tf.train.shuffle_batch(

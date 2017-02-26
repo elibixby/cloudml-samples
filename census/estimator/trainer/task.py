@@ -7,9 +7,18 @@ from tensorflow.contrib.learn.python.learn import learn_runner
 from tensorflow.contrib.learn.python.learn.utils import (
     saved_model_export_utils)
 
-
 tf.logging.set_verbosity(tf.logging.INFO)
 
+def make_export_strategy(prediction_format):
+  strat = saved_model_export_utils.make_export_strategy(
+      model.generate_serving_input_fn(prediction_format),
+      default_output_alternative_key=None,
+      exports_to_keep=1
+  )
+  # Hack because make_export_strategy doesn't support
+  # name changes
+  return tf.contrib.learn.ExportStrategy(
+      prediction_format, strat.export_fn)
 
 def generate_experiment_fn(train_files,
                            eval_files,
@@ -65,11 +74,10 @@ def generate_experiment_fn(train_files,
         eval_input_fn=eval_input,
         # export strategies control the prediction graph structure
         # of exported binaries.
-        export_strategies=[saved_model_export_utils.make_export_strategy(
-            model.serving_input_fn,
-            default_output_alternative_key=None,
-            exports_to_keep=1
-        )],
+        export_strategies=[
+            make_export_strategy(f)
+            for f in ['CSV', 'TF_RECORD', 'JSON']
+        ],
         **experiment_args
     )
   return _experiment_fn
