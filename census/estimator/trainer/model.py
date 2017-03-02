@@ -22,20 +22,13 @@ from tensorflow.contrib.learn.python.learn.utils import input_fn_utils
 
 # Define the format of your input data including unused columns
 CSV_COLUMNS = ['age', 'workclass', 'fnlwgt', 'education', 'education_num',
-           'marital_status', 'occupation', 'relationship', 'race', 'gender',
-           'capital_gain', 'capital_loss', 'hours_per_week', 'native_country',
-           'income_bracket']
-LABEL_COLUMN = 'income_bracket'
-# Possible values of the label column. The indices of these values will
-# be returned by the prediction service.
-LABELS = [' <=50K.', ' >50K.']
-
+               'marital_status', 'occupation', 'relationship', 'race', 'gender',
+               'capital_gain', 'capital_loss', 'hours_per_week', 'native_country',
+               'income_bracket']
 CSV_COLUMN_DEFAULTS = [[0], [''], [0], [''], [0], [''], [''], [''], [''], [''],
-            [0], [0], [0], [''], ['']]
-
-EVAL_HEADER_LINES = 1
-TRAIN_HEADER_LINES = 0
-
+                       [0], [0], [0], [''], ['']]
+LABEL_COLUMN = 'income_bracket'
+LABELS = [' <=50K', ' >50K']
 
 # Define the initial ingestion of each feature used by your model.
 # Additionally, provide metadata about the feature.
@@ -73,8 +66,7 @@ INPUT_COLUMNS = [
     layers.real_valued_column('hours_per_week'),
 ]
 
-# Define a handy constant for later
-INPUT_COLUMN_NAMES = [col.name for col in INPUT_COLUMNS]
+UNUSED_COLUMNS = set(CSV_COLUMNS) - set(col.name for col in INPUT_COLUMNS) - set([LABEL_COLUMN])
 
 
 def build_estimator(model_dir, embedding_size=8, hidden_units=None):
@@ -107,7 +99,7 @@ def build_estimator(model_dir, embedding_size=8, hidden_units=None):
    workclass, occupation, native_country, age,
    education_num, capital_gain, capital_loss, hours_per_week) = INPUT_COLUMNS
   """Build an estimator."""
-  
+
   # Reused Transformations.
   # Continuous columns can be converted to categorical via bucketization
   age_buckets = layers.bucketized_column(
@@ -156,6 +148,24 @@ def build_estimator(model_dir, embedding_size=8, hidden_units=None):
       dnn_hidden_units=hidden_units or [100, 70, 50, 25])
 
 
+def parse_label_column(label_string_tensor):
+  """Parses a string tensor into the label tensor
+  Args:
+    label_string_tensor: Tensor of dtype string. Result of parsing the
+    CSV column specified by LABEL_COLUMN
+  Returns:
+    A Tensor of the same shape as label_string_tensor, should return
+    an int64 Tensor representing the label index for classification tasks,
+    and a float32 Tensor representing the value for a regression task.
+  """
+  # Build a Hash Table inside the graph
+  table = tf.contrib.lookup.string_to_index_table_from_tensor(
+      tf.constant(LABELS))
+
+  # Use the hash table to convert string labels to ints
+  return table.lookup(label_string_tensor)
+
+
 # ************************************************************************
 # YOU NEED NOT MODIFY ANYTHING BELOW HERE TO ADAPT THIS MODEL TO YOUR DATA
 # ************************************************************************
@@ -163,7 +173,7 @@ def build_estimator(model_dir, embedding_size=8, hidden_units=None):
 def parse_csv(row_tensor):
     columns = tf.decode_csv(row_tensor, record_defaults=CSV_COLUMN_DEFAULTS)
     features = dict(zip(CSV_COLUMNS, columns))
-    
+
     # Remove unused columns
     used_column_names = [col.name for col in INPUT_COLUMNS]
     used_column_names.append(LABEL_COLUMN)
@@ -259,6 +269,7 @@ def generate_serving_input_fn(input_type, default_batch_size=None):
   return serving_input_fn
 
 
+
 def generate_input_fn(filenames,
                       num_epochs=None,
                       shuffle=True,
@@ -281,8 +292,14 @@ def generate_input_fn(filenames,
         Tensors, and indices is a single Tensor of label indices.
   """
   def _input_fn():
+    if len(filenames) == 1:
+      # filename is a glob.
+      files = tf.train.match_filenames_once(filenames[0])
+    else:
+      files = filenames
+
     filename_queue = tf.train.string_input_producer(
-        filenames, num_epochs=num_epochs, shuffle=shuffle)
+        files, num_epochs=num_epochs, shuffle=shuffle)
     reader = tf.TextLineReader(skip_header_lines=skip_header_lines)
 
     _, value = reader.read_up_to(filename_queue, num_records=batch_size)
@@ -292,6 +309,8 @@ def generate_input_fn(filenames,
       features[key] = tf.expand_dims(tensor, -1)
 
     if shuffle:
+      # This operation maintains a buffer of Tensors so that inputs are
+      # well shuffled even between batches.
       features = tf.train.shuffle_batch(
           features,
           batch_size,
@@ -301,13 +320,6 @@ def generate_input_fn(filenames,
           enqueue_many=True,
           allow_smaller_final_batch=True
       )
-
-    # Build a Hash Table inside the graph
-    table = tf.contrib.lookup.string_to_index_table_from_tensor(
-        tf.constant(LABELS))
-
-    # Use the hash table to convert string labels to ints
-    indices = table.lookup(features.pop(LABEL_COLUMN))
-
-    return features, indices
+    label_tensor = parse_label_column(features.pop(LABEL_COLUMN))
+    return features, label_tensor
   return _input_fn

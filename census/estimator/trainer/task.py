@@ -31,7 +31,7 @@ def generate_experiment_fn(train_files,
                            scale_factor=0.7,
                            **experiment_args):
   """Create an experiment function given hyperparameters.
-  
+
   See command line help text for description of args.
   Returns:
     A function (output_dir) -> Experiment where output_dir is a string
@@ -51,13 +51,11 @@ def generate_experiment_fn(train_files,
         train_files,
         num_epochs=num_epochs,
         batch_size=train_batch_size,
-        skip_header_lines=model.TRAIN_HEADER_LINES
     )
     # Don't shuffle evaluation data
     eval_input = model.generate_input_fn(
         eval_files,
         batch_size=eval_batch_size,
-        skip_header_lines=model.EVAL_HEADER_LINES,
         shuffle=False
     )
     return tf.contrib.learn.Experiment(
