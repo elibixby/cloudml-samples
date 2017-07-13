@@ -22,7 +22,6 @@ import multiprocessing
 import tensorflow as tf
 from tensorflow.python.lib.io import file_io
 
-
 def read_examples(input_files, batch_size, shuffle, num_epochs=None):
   """Creates readers and queues for reading example protos."""
   files = []

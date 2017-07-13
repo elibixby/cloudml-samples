@@ -15,13 +15,18 @@
 """
 
 import argparse
-import json
 import logging
-import os
 
 import tensorflow as tf
 from tensorflow.contrib import layers
 from tensorflow.contrib.slim.python.slim.nets import inception_v3 as inception
+
+from tensorflow.python.saved_model import builder as saved_model_builder
+from tensorflow.python.saved_model import signature_constants
+from tensorflow.python.saved_model import signature_def_utils
+from tensorflow.python.saved_model import tag_constants
+from tensorflow.python.saved_model import utils as saved_model_utils
+
 import util
 from util import override_if_not_in_args
 
@@ -42,6 +47,30 @@ class GraphMod():
   TRAIN = 1
   EVALUATE = 2
   PREDICT = 3
+
+
+def build_signature(inputs, outputs):
+  """Build the signature.
+
+  Not using predic_signature_def in saved_model because it is replacing the
+  tensor name, b/35900497.
+
+  Args:
+    inputs: a dictionary of tensor name to tensor
+    outputs: a dictionary of tensor name to tensor
+  Returns:
+    The signature, a SignatureDef proto.
+  """
+  signature_inputs = {key: saved_model_utils.build_tensor_info(tensor)
+                      for key, tensor in inputs.items()}
+  signature_outputs = {key: saved_model_utils.build_tensor_info(tensor)
+                       for key, tensor in outputs.items()}
+
+  signature_def = signature_def_utils.build_signature_def(
+      signature_inputs, signature_outputs,
+      signature_constants.PREDICT_METHOD_NAME)
+
+  return signature_def
 
 
 def create_model():
@@ -77,6 +106,7 @@ class GraphReferences(object):
     self.metric_values = []
     self.keys = None
     self.predictions = []
+    self.input_jpeg = None
 
 
 class Model(object):
@@ -90,7 +120,6 @@ class Model(object):
   def add_final_training_ops(self,
                              embeddings,
                              all_labels_count,
-                             bottleneck_tensor_size,
                              hidden_layer_size=BOTTLENECK_TENSOR_SIZE / 4,
                              dropout_keep_prob=None):
     """Adds a new softmax and fully-connected layer for training.
@@ -103,7 +132,6 @@ class Model(object):
     Args:
       embeddings: The embedding (bottleneck) tensor.
       all_labels_count: The number of all labels including the default label.
-      bottleneck_tensor_size: The number of embeddings.
       hidden_layer_size: The size of the hidden_layer. Roughtly, 1/4 of the
                          bottleneck tensor size.
       dropout_keep_prob: the percentage of activation values that are retained.
@@ -112,15 +140,8 @@ class Model(object):
       logits: The logits tensor.
     """
     with tf.name_scope('input'):
-      bottleneck_input = tf.placeholder_with_default(
-          embeddings,
-          shape=[None, bottleneck_tensor_size],
-          name='ReshapeSqueezed')
-      bottleneck_with_no_gradient = tf.stop_gradient(bottleneck_input)
-
       with tf.name_scope('Wx_plus_b'):
-        hidden = layers.fully_connected(bottleneck_with_no_gradient,
-                                        hidden_layer_size)
+        hidden = layers.fully_connected(embeddings, hidden_layer_size)
         # We need a dropout when the size of the dataset is rather small.
         if dropout_keep_prob:
           hidden = tf.nn.dropout(hidden, dropout_keep_prob)
@@ -176,8 +197,8 @@ class Model(object):
     image = tf.image.convert_image_dtype(image, dtype=tf.float32)
 
     # Then shift images to [-1, 1) for Inception.
-    image = tf.sub(image, 0.5)
-    image = tf.mul(image, 2.0)
+    image = tf.subtract(image, 0.5)
+    image = tf.multiply(image, 2.0)
 
     # Build Inception layers, which expect A tensor of type float from [-1, 1)
     # and shape [batch_size, height, width, channels].
@@ -194,7 +215,7 @@ class Model(object):
     tensors = GraphReferences()
     is_training = graph_mod == GraphMod.TRAIN
     if data_paths:
-      _, tensors.examples = util.read_examples(
+      tensors.keys, tensors.examples = util.read_examples(
           data_paths,
           batch_size,
           shuffle=is_training,
@@ -241,7 +262,6 @@ class Model(object):
       softmax, logits = self.add_final_training_ops(
           embeddings,
           all_labels_count,
-          BOTTLENECK_TENSOR_SIZE,
           dropout_keep_prob=self.dropout if is_training else None)
 
     # Prediction is the index of the label with the highest score. We are
@@ -260,7 +280,6 @@ class Model(object):
       tensors.train, tensors.global_step = training(loss_value)
     else:
       tensors.global_step = tf.Variable(0, name='global_step', trainable=False)
-      tensors.uris = uris
 
     # Add means across all batches.
     loss_updates, loss_op = util.loss(loss_value)
@@ -328,20 +347,19 @@ class Model(object):
 
     keys_placeholder = tf.placeholder(tf.string, shape=[None])
     inputs = {
-        'key': keys_placeholder.name,
-        'image_bytes': tensors.input_jpeg.name
+        'key': keys_placeholder,
+        'image_bytes': tensors.input_jpeg
     }
-
-    tf.add_to_collection('inputs', json.dumps(inputs))
 
     # To extract the id, we need to add the identity function.
     keys = tf.identity(keys_placeholder)
     outputs = {
-        'key': keys.name,
-        'prediction': tensors.predictions[0].name,
-        'scores': tensors.predictions[1].name
+        'key': keys,
+        'prediction': tensors.predictions[0],
+        'scores': tensors.predictions[1]
     }
-    tf.add_to_collection('outputs', json.dumps(outputs))
+
+    return inputs, outputs
 
   def export(self, last_checkpoint, output_dir):
     """Builds a prediction graph and xports the model.
@@ -353,15 +371,21 @@ class Model(object):
     logging.info('Exporting prediction graph to %s', output_dir)
     with tf.Session(graph=tf.Graph()) as sess:
       # Build and save prediction meta graph and trained variable values.
-      self.build_prediction_graph()
+      inputs, outputs = self.build_prediction_graph()
       init_op = tf.global_variables_initializer()
       sess.run(init_op)
       self.restore_from_checkpoint(sess, self.inception_checkpoint_file,
                                    last_checkpoint)
-      saver = tf.train.Saver()
-      saver.export_meta_graph(filename=os.path.join(output_dir, 'export.meta'))
-      saver.save(
-          sess, os.path.join(output_dir, 'export'), write_meta_graph=False)
+      signature_def = build_signature(inputs=inputs, outputs=outputs)
+      signature_def_map = {
+          signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY: signature_def
+      }
+      builder = saved_model_builder.SavedModelBuilder(output_dir)
+      builder.add_meta_graph_and_variables(
+          sess,
+          tags=[tag_constants.SERVING],
+          signature_def_map=signature_def_map)
+      builder.save()
 
   def format_metric_values(self, metric_values):
     """Formats metric values - used for logging purpose."""
@@ -376,10 +400,6 @@ class Model(object):
       pass
 
     return '%s, %s' % (loss_str, accuracy_str)
-
-  def format_prediction_values(self, prediction):
-    """Formats prediction values - used for writing batch predictions as csv."""
-    return '%.3f' % (prediction[0])
 
 
 def loss(logits, labels):

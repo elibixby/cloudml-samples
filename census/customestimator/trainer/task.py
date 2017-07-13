@@ -4,8 +4,7 @@ import os
 import model
 
 import tensorflow as tf
-from tensorflow.contrib.learn.python.learn import learn_runner
-from tensorflow.contrib.learn.python.learn.estimators import run_config
+from tensorflow.contrib.learn import learn_runner
 from tensorflow.contrib.learn.python.learn.utils import (
     saved_model_export_utils)
 from tensorflow.contrib.training.python.training import hparam
@@ -41,14 +40,17 @@ def generate_experiment_fn(**experiment_args):
         shuffle=False
     )
     return tf.contrib.learn.Experiment(
-        model.build_estimator(
-            embedding_size=hparams.embedding_size,
-            # Construct layers sizes with exponetial decay
-            hidden_units=[
-                max(2, int(hparams.first_layer_size *
-                           hparams.scale_factor**i))
-                for i in range(hparams.num_layers)
-            ],
+        tf.estimator.Estimator(
+            model.generate_model_fn(
+                embedding_size=hparams.embedding_size,
+                # Construct layers sizes with exponetial decay
+                hidden_units=[
+                    max(2, int(hparams.first_layer_size *
+                               hparams.scale_factor**i))
+                    for i in range(hparams.num_layers)
+                ],
+                learning_rate=hparams.learning_rate
+            ),
             config=run_config
         ),
         train_input_fn=train_input,
@@ -103,6 +105,12 @@ if __name__ == '__main__':
       type=int
   )
   parser.add_argument(
+      '--learning-rate',
+      help='Learning rate for the optimizer',
+      default=0.1,
+      type=float
+  )
+  parser.add_argument(
       '--first-layer-size',
       help='Number of nodes in the first layer of the DNN',
       default=100,
@@ -125,8 +133,6 @@ if __name__ == '__main__':
       help='GCS location to write checkpoints and export models',
       required=True
   )
-
-  # Argument to turn on all logging
   parser.add_argument(
       '--verbosity',
       choices=[
@@ -137,6 +143,7 @@ if __name__ == '__main__':
           'WARN'
       ],
       default='INFO',
+      help='Set logging verbosity'
   )
   # Experiment arguments
   parser.add_argument(
@@ -148,7 +155,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--min-eval-frequency',
       help='Minimum number of training steps between evaluations',
-      default=None,  # Use TensorFlow's default (currently, 1000 on GCS)
+      default=1,
       type=int
   )
   parser.add_argument(
@@ -161,8 +168,11 @@ if __name__ == '__main__':
   )
   parser.add_argument(
       '--eval-steps',
-      help='Number of steps to run evalution for at each checkpoint',
-      default=100,
+      help="""\
+      Number of steps to run evalution for at each checkpoint.
+      If unspecified will run until the input from --eval-files is exhausted
+      """,
+      default=None,
       type=int
   )
   parser.add_argument(
@@ -192,10 +202,9 @@ if __name__ == '__main__':
           eval_steps=args.eval_steps,
           export_strategies=[saved_model_export_utils.make_export_strategy(
               model.SERVING_FUNCTIONS[args.export_format],
-              exports_to_keep=1,
-              default_output_alternative_key=None,
+              exports_to_keep=1
           )]
       ),
-      run_config=run_config.RunConfig(model_dir=args.job_dir),
+      run_config=tf.contrib.learn.RunConfig(model_dir=args.job_dir),
       hparams=hparam.HParams(**args.__dict__)
   )

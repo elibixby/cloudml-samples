@@ -12,6 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+################################################################################
+# This sample has been deprecated.
+################################################################################
+
+
 """Iris Classification Sample Cloud Runner.
 """
 import argparse
@@ -171,7 +177,7 @@ def preprocess(pipeline, training_data, eval_data, predict_data, output_dir):
 
 def get_train_parameters(trainer_uri, endpoint, metadata, trainer_job_args):
   return {
-      'package_uris': [trainer_uri],
+      'package_uris': [trainer_uri, ml.version.installed_sdk_location],
       'python_module': MODULE_NAME,
       'export_subdir': EXPORT_SUBDIRECTORY,
       'cloud_ml_endpoint': endpoint,
@@ -352,9 +358,9 @@ def model_analysis(pipeline, output_dir, evaluation_data=None, metadata=None):
 
 def get_pipeline_name(cloud):
   if cloud:
-    return 'BlockingDataflowPipelineRunner'
+    return 'DataflowRunner'
   else:
-    return  'DirectPipelineRunner'
+    return  'DirectRunner'
 
 def main(argv=None):
   """Run Preprocessing, Training, Eval, and Prediction as a single Dataflow."""
@@ -424,7 +430,7 @@ def main(argv=None):
     print 'Deploying %s version: %s' % (args.deploy_model_name,
                                         args.deploy_model_version)
 
-  p.run()
+  p.run().wait_until_finish()
 
   if args.cloud:
     print 'Deployed %s version: %s' % (args.deploy_model_name,

@@ -1,4 +1,4 @@
-# Copyright 2016 Google Inc. All Rights Reserved.
+# Copyright 2017 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from setuptools import find_packages
-from setuptools import setup
+import setuptools
 
-REQUIRED_PACKAGES = [
-  'tensorflow==1.0.1',
-]
+NAME = 'trainer'
+VERSION = '1.0'
+TENSORFLOW_TRANSFORM = 'tensorflow-transform==0.1.10'
 
-setup(
-    name='trainer',
-    version='0.1',
-    author = 'Google',
-    author_email = 'cloudml-feedback@google.com',
-    install_requires=REQUIRED_PACKAGES,
-    packages=find_packages(),
-    include_package_data=True,
-    description='Google Cloud Machine Learning flowers example',
-    requires=[]
-)
+
+if __name__ == '__main__':
+  setuptools.setup(name=NAME, version=VERSION, packages=['trainer'],
+                   install_requires=[TENSORFLOW_TRANSFORM])

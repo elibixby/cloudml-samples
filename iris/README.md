@@ -1,5 +1,8 @@
-Iris: End-to-end Cloud Machine Learning API sample
+Iris: End-to-end Cloud Machine Learning API sample (DEPRECATED)
 --------------------------------------------------
+
+![status: inactive](https://img.shields.io/badge/status-inactive-red.svg)
+This sample has been deprecated. It has not been tested against the newest version of TensorFlow. When running `gcloud ml-engine` commands be sure to use `--runtime-version 0.12`. For a maintained sample check out [The Census Example](../census)
 
 This sample uses the [Google Cloud Machine Learning API](https://cloud.google.com/ml), [Tensorflow](https://tensorflow.org), [Apache Beam](https://cloud.google.com/dataflow), and the provided Cloud ML SDK to,
 
